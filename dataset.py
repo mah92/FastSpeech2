@@ -1,5 +1,4 @@
 import json
-import math
 import os
 
 import numpy as np
@@ -10,84 +9,79 @@ from utils.tools import pad_1D, pad_2D
 
 
 class Dataset(Dataset):
-    def __init__(
-        self, filename, preprocess_config, train_config, sort=False, drop_last=False
-    ):
+    def __init__(self, filename, preprocess_config, train_config, sort=False, drop_last=False):
+        # Initialize symbols first
+        from text.symbols import initialize
+        initialize(preprocess_config["path"]["tokens_path"])
+
         self.dataset_name = preprocess_config["dataset"]
         self.preprocessed_path = preprocess_config["path"]["preprocessed_path"]
         self.cleaners = preprocess_config["preprocessing"]["text"]["text_cleaners"]
         self.batch_size = train_config["optimizer"]["batch_size"]
 
-        self.basename, self.speaker, self.text, self.raw_text = self.process_meta(
-            filename
-        )
+        # Initialize symbols first
+        from text.symbols import get_symbols
+        get_symbols()
+
+        self.basename, self.speaker, self.ipa = self.process_meta(filename)
         with open(os.path.join(self.preprocessed_path, "speakers.json")) as f:
             self.speaker_map = json.load(f)
         self.sort = sort
         self.drop_last = drop_last
 
     def __len__(self):
-        return len(self.text)
+        return len(self.ipa)
 
     def __getitem__(self, idx):
         basename = self.basename[idx]
         speaker = self.speaker[idx]
         speaker_id = self.speaker_map[speaker]
-        raw_text = self.raw_text[idx]
-        phone = np.array(text_to_sequence(self.text[idx], self.cleaners))
-        mel_path = os.path.join(
-            self.preprocessed_path,
-            "mel",
-            "{}-mel-{}.npy".format(speaker, basename),
-        )
+        ipa_seq = np.array(text_to_sequence(self.ipa[idx], self.cleaners))
+        
+        mel_path = os.path.join(self.preprocessed_path, "mel", f"{speaker}-mel-{basename}.npy")
         mel = np.load(mel_path)
-        pitch_path = os.path.join(
-            self.preprocessed_path,
-            "pitch",
-            "{}-pitch-{}.npy".format(speaker, basename),
-        )
+        
+        pitch_path = os.path.join(self.preprocessed_path, "pitch", f"{speaker}-pitch-{basename}.npy")
         pitch = np.load(pitch_path)
-        energy_path = os.path.join(
-            self.preprocessed_path,
-            "energy",
-            "{}-energy-{}.npy".format(speaker, basename),
-        )
+        
+        energy_path = os.path.join(self.preprocessed_path, "energy", f"{speaker}-energy-{basename}.npy")
         energy = np.load(energy_path)
-        duration_path = os.path.join(
-            self.preprocessed_path,
-            "duration",
-            "{}-duration-{}.npy".format(speaker, basename),
-        )
+        
+        duration_path = os.path.join(self.preprocessed_path, "duration", f"{speaker}-duration-{basename}.npy")
         duration = np.load(duration_path)
 
-        sample = {
+        return {
             "id": basename,
             "speaker": speaker_id,
-            "text": phone,
-            "raw_text": raw_text,
+            "ipa": ipa_seq,
             "mel": mel,
             "pitch": pitch,
             "energy": energy,
             "duration": duration,
         }
 
-        return sample
-
     def process_meta(self, filename):
-        with open(
-            os.path.join(self.preprocessed_path, filename), "r", encoding="utf-8"
-        ) as f:
+        with open(os.path.join(self.preprocessed_path, filename), "r", encoding="utf-8") as f:
             name = []
             speaker = []
-            text = []
-            raw_text = []
+            ipa = []
             for line in f.readlines():
-                n, s, t, r = line.strip("\n").split("|")
+                parts = line.strip("\n").split("|")
+                
+                if len(parts) == 2:  # id|ipa format
+                    n, i = parts
+                    s = "default"
+                elif len(parts) == 3:  # id|speaker|ipa format
+                    n, s, i = parts
+                elif len(parts) >= 5:  # full format
+                    n, s, _, _, i = parts[:5]
+                else:
+                    continue
+                    
                 name.append(n)
                 speaker.append(s)
-                text.append(t)
-                raw_text.append(r)
-            return name, speaker, text, raw_text
+                ipa.append(i)
+            return name, speaker, ipa
 
     def reprocess(self, data, idxs):
         ids = [data[idx]["id"] for idx in idxs]
@@ -149,42 +143,39 @@ class Dataset(Dataset):
 class TextDataset(Dataset):
     def __init__(self, filepath, preprocess_config):
         self.cleaners = preprocess_config["preprocessing"]["text"]["text_cleaners"]
+        self.preprocessed_path = preprocess_config["path"]["preprocessed_path"]
+        
+        # Initialize symbols
+        from text.symbols import initialize, get_symbols
+        initialize(preprocess_config["path"]["tokens_path"])
+        get_symbols()
 
-        self.basename, self.speaker, self.text, self.raw_text = self.process_meta(
-            filepath
-        )
-        with open(
-            os.path.join(
-                preprocess_config["path"]["preprocessed_path"], "speakers.json"
-            )
-        ) as f:
+        self.basename, self.speaker, self.ipa = self.process_meta(filepath)
+        with open(os.path.join(self.preprocessed_path, "speakers.json")) as f:
             self.speaker_map = json.load(f)
-
-    def __len__(self):
-        return len(self.text)
-
-    def __getitem__(self, idx):
-        basename = self.basename[idx]
-        speaker = self.speaker[idx]
-        speaker_id = self.speaker_map[speaker]
-        raw_text = self.raw_text[idx]
-        phone = np.array(text_to_sequence(self.text[idx], self.cleaners))
-
-        return (basename, speaker_id, phone, raw_text)
 
     def process_meta(self, filename):
         with open(filename, "r", encoding="utf-8") as f:
             name = []
             speaker = []
-            text = []
-            raw_text = []
+            ipa = []
             for line in f.readlines():
-                n, s, t, r = line.strip("\n").split("|")
+                parts = line.strip("\n").split("|")
+                
+                if len(parts) == 2:  # id|ipa format
+                    n, i = parts
+                    s = "default"
+                elif len(parts) == 3:  # id|speaker|ipa format
+                    n, s, i = parts
+                elif len(parts) >= 5:  # full format
+                    n, s, _, _, i = parts[:5]
+                else:
+                    continue
+                    
                 name.append(n)
                 speaker.append(s)
-                text.append(t)
-                raw_text.append(r)
-            return name, speaker, text, raw_text
+                ipa.append(i)
+            return name, speaker, ipa
 
     def collate_fn(self, data):
         ids = [d[0] for d in data]

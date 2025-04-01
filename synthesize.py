@@ -6,8 +6,6 @@ import torch
 import yaml
 import numpy as np
 from torch.utils.data import DataLoader
-from g2p_en import G2p
-from pypinyin import pinyin, Style
 
 from utils.model import get_model, get_vocoder
 from utils.tools import to_device, synth_samples
@@ -17,87 +15,36 @@ from text import text_to_sequence
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def read_lexicon(lex_path):
-    lexicon = {}
-    with open(lex_path) as f:
-        for line in f:
-            temp = re.split(r"\s+", line.strip("\n"))
-            word = temp[0]
-            phones = temp[1:]
-            if word.lower() not in lexicon:
-                lexicon[word.lower()] = phones
-    return lexicon
-
-
-def preprocess_english(text, preprocess_config):
+def preprocess_ipa(text, preprocess_config):
+    """Direct IPA text processing"""
     text = text.rstrip(punctuation)
-    lexicon = read_lexicon(preprocess_config["path"]["lexicon_path"])
-
-    g2p = G2p()
-    phones = []
-    words = re.split(r"([,;.\-\?\!\s+])", text)
-    for w in words:
-        if w.lower() in lexicon:
-            phones += lexicon[w.lower()]
-        else:
-            phones += list(filter(lambda p: p != " ", g2p(w)))
-    phones = "{" + "}{".join(phones) + "}"
-    phones = re.sub(r"\{[^\w\s]?\}", "{sp}", phones)
-    phones = phones.replace("}{", " ")
-
-    print("Raw Text Sequence: {}".format(text))
-    print("Phoneme Sequence: {}".format(phones))
+    print("Raw IPA Sequence:", text)
+    
+    # Apply IPA cleaners
     sequence = np.array(
         text_to_sequence(
-            phones, preprocess_config["preprocessing"]["text"]["text_cleaners"]
+            text, 
+            preprocess_config["preprocessing"]["text"]["text_cleaners"]
         )
     )
-
     return np.array(sequence)
-
-
-def preprocess_mandarin(text, preprocess_config):
-    lexicon = read_lexicon(preprocess_config["path"]["lexicon_path"])
-
-    phones = []
-    pinyins = [
-        p[0]
-        for p in pinyin(
-            text, style=Style.TONE3, strict=False, neutral_tone_with_five=True
-        )
-    ]
-    for p in pinyins:
-        if p in lexicon:
-            phones += lexicon[p]
-        else:
-            phones.append("sp")
-
-    phones = "{" + " ".join(phones) + "}"
-    print("Raw Text Sequence: {}".format(text))
-    print("Phoneme Sequence: {}".format(phones))
-    sequence = np.array(
-        text_to_sequence(
-            phones, preprocess_config["preprocessing"]["text"]["text_cleaners"]
-        )
-    )
-
-    return np.array(sequence)
-
 
 def synthesize(model, step, configs, vocoder, batchs, control_values):
+    """Synthesize speech from IPA input"""
     preprocess_config, model_config, train_config = configs
     pitch_control, energy_control, duration_control = control_values
 
     for batch in batchs:
         batch = to_device(batch, device)
         with torch.no_grad():
-            # Forward
+            # Forward pass with control values
             output = model(
                 *(batch[2:]),
                 p_control=pitch_control,
                 e_control=energy_control,
                 d_control=duration_control
             )
+            # Generate audio samples
             synth_samples(
                 batch,
                 output,
@@ -107,9 +54,7 @@ def synthesize(model, step, configs, vocoder, batchs, control_values):
                 train_config["path"]["result_path"],
             )
 
-
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--restore_step", type=int, required=True)
     parser.add_argument(
@@ -129,7 +74,7 @@ if __name__ == "__main__":
         "--text",
         type=str,
         default=None,
-        help="raw text to synthesize, for single-sentence mode only",
+        help="raw IPA text to synthesize, for single-sentence mode only",
     )
     parser.add_argument(
         "--speaker_id",
@@ -170,13 +115,13 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # Check source texts
+    # Check arguments
     if args.mode == "batch":
         assert args.source is not None and args.text is None
     if args.mode == "single":
         assert args.source is None and args.text is not None
 
-    # Read Config
+    # Read Configs
     preprocess_config = yaml.load(
         open(args.preprocess_config, "r"), Loader=yaml.FullLoader
     )
@@ -184,31 +129,34 @@ if __name__ == "__main__":
     train_config = yaml.load(open(args.train_config, "r"), Loader=yaml.FullLoader)
     configs = (preprocess_config, model_config, train_config)
 
+    # Initialize symbols
+    from text.symbols import initialize
+    initialize(preprocess_config["path"]["tokens_path"])
+
     # Get model
     model = get_model(args, configs, device, train=False)
 
     # Load vocoder
     vocoder = get_vocoder(model_config, device)
 
-    # Preprocess texts
+    # Prepare data
     if args.mode == "batch":
-        # Get dataset
+        # Batch processing
         dataset = TextDataset(args.source, preprocess_config)
         batchs = DataLoader(
             dataset,
             batch_size=8,
             collate_fn=dataset.collate_fn,
         )
-    if args.mode == "single":
-        ids = raw_texts = [args.text[:100]]
+    else:
+        # Single sentence processing
+        ids = [args.text[:100]]
         speakers = np.array([args.speaker_id])
-        if preprocess_config["preprocessing"]["text"]["language"] == "en":
-            texts = np.array([preprocess_english(args.text, preprocess_config)])
-        elif preprocess_config["preprocessing"]["text"]["language"] == "zh":
-            texts = np.array([preprocess_mandarin(args.text, preprocess_config)])
+        texts = np.array([preprocess_ipa(args.text, preprocess_config)])
         text_lens = np.array([len(texts[0])])
-        batchs = [(ids, raw_texts, speakers, texts, text_lens, max(text_lens))]
+        batchs = [(ids, ids, speakers, texts, text_lens, max(text_lens))]
 
     control_values = args.pitch_control, args.energy_control, args.duration_control
 
+    # Synthesize
     synthesize(model, args.restore_step, configs, vocoder, batchs, control_values)

@@ -1,29 +1,66 @@
-""" from https://github.com/keithito/tacotron """
+"""Simplified symbol system with explicit initialization"""
+from pathlib import Path
 
-"""
-Defines the set of symbols used in text input to the model.
+_symbols = None
+_symbol_to_id = None
+_id_to_symbol = None
 
-The default is a set of ASCII characters that works well for English or text that has been run through Unidecode. For other data, you can modify _characters. See TRAINING_DATA.md for details. """
+def initialize(tokens_path):
+    global _symbols, _symbol_to_id, _id_to_symbol
+    path = Path(tokens_path)
+    
+    # Handle case where path is directory (old behavior)
+    if path.is_dir():
+        path = path / "tokens.txt"
+    
+    if not path.exists():
+        raise FileNotFoundError(f"Tokens file not found at {path}")
+    
+    with open(path, 'r', encoding='utf-8') as f:
+        _symbols = [line.split()[0] for line in f if line.strip()]
+    
+    _symbol_to_id = {s: i for i, s in enumerate(_symbols)}
+    _id_to_symbol = {i: s for i, s in enumerate(_symbols)}
 
-from text import cmudict, pinyin
+def get_symbols():
+    if _symbols is None:
+        raise RuntimeError("Symbols not initialized. Call initialize() first")
+    return _symbols
 
-_pad = "_"
-_punctuation = "!'(),.:;? "
-_special = "-"
-_letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-_silences = ["@sp", "@spn", "@sil"]
+def get_symbol_to_id():
+    if _symbol_to_id is None:
+        raise RuntimeError("Symbols not initialized. Call initialize() first")
+    return _symbol_to_id
 
-# Prepend "@" to ARPAbet symbols to ensure uniqueness (some are the same as uppercase letters):
-_arpabet = ["@" + s for s in cmudict.valid_symbols]
-_pinyin = ["@" + s for s in pinyin.valid_symbols]
+def get_id_to_symbol():
+    if _id_to_symbol is None:
+        raise RuntimeError("Symbols not initialized. Call initialize() first")
+    return _id_to_symbol
 
-# Export all symbols:
-symbols = (
-    [_pad]
-    + list(_special)
-    + list(_punctuation)
-    + list(_letters)
-    + _arpabet
-    + _pinyin
-    + _silences
-)
+def text_to_sequence(text, cleaner_names):
+    return [get_symbol_to_id().get(s, get_symbol_to_id()["?"]) for s in text]
+
+def sequence_to_text(sequence):
+    return ''.join([get_id_to_symbol().get(i, "?") for i in sequence])
+
+# Special symbols
+PAD = "_"
+UNK = "?"
+BOS = "^"
+EOS = "$"
+
+@property
+def PAD_ID():
+    return 0
+
+@property 
+def UNK_ID():
+    return get_symbol_to_id().get(UNK, 1) if _symbol_to_id is not None else 1
+
+@property
+def BOS_ID():
+    return get_symbol_to_id().get(BOS, 2) if _symbol_to_id is not None else 2
+
+@property
+def EOS_ID():
+    return get_symbol_to_id().get(EOS, 3) if _symbol_to_id is not None else 3

@@ -17,8 +17,11 @@ class FastSpeech2(nn.Module):
         super(FastSpeech2, self).__init__()
         self.model_config = model_config
 
-        self.encoder = Encoder(model_config)
-        self.variance_adaptor = VarianceAdaptor(preprocess_config, model_config)
+        # Initialize symbols before creating encoder
+        from text.symbols import initialize
+        initialize(preprocess_config["path"]["tokens_path"])
+
+        self.encoder = Encoder(model_config)  # self.variance_adaptor = VarianceAdaptor(preprocess_config, model_config)
         self.decoder = Decoder(model_config)
         self.mel_linear = nn.Linear(
             model_config["transformer"]["decoder_hidden"],
